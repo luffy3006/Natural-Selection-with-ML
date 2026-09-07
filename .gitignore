@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+best_bird.pkl
+.venv/
+.env

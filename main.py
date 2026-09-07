@@ -1,0 +1,404 @@
+"""Neuroevolutionary Flappy Bird using pygame and neat-python.
+
+Run normally for the visual simulation:
+    python main.py
+
+Run a dependency-free syntax check:
+    python main.py --test
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import pickle
+import random
+from pathlib import Path
+from typing import Any
+
+import neat
+import pygame
+
+
+WIDTH = 500
+HEIGHT = 800
+FPS = 30
+GROUND_HEIGHT = 90
+GROUND_Y = HEIGHT - GROUND_HEIGHT
+BIRD_X = 100
+BIRD_RADIUS = 16
+PIPE_WIDTH = 70
+PIPE_GAP = 175
+PIPE_SPEED = 5
+MAX_FALL_SPEED = 12
+GENERATION_TIME_LIMIT = 30 * FPS
+BEST_GENOME_PATH = Path(__file__).with_name("best_bird.pkl")
+CONFIG_PATH = Path(__file__).with_name("config-feedforward.txt")
+
+SKY = (117, 205, 238)
+GROUND = (218, 177, 92)
+GRASS = (95, 184, 76)
+PIPE = (54, 177, 74)
+PIPE_DARK = (36, 125, 52)
+BIRD = (248, 198, 54)
+BIRD_WING = (232, 145, 35)
+INK = (30, 43, 48)
+WHITE = (255, 255, 255)
+PANEL = (247, 251, 246)
+PANEL_EDGE = (205, 224, 211)
+ACCENT = (27, 112, 91)
+STOP = (190, 67, 61)
+STOP_HOVER = (215, 78, 69)
+
+
+class TrainingStopped(Exception):
+    """Raised when the player clicks the in-game stop control."""
+
+
+class Bird:
+    """A player controlled by one NEAT genome."""
+
+    def __init__(self, x: float = BIRD_X, y: float = HEIGHT / 2) -> None:
+        self.x = x
+        self.y = y
+        self.velocity = 0.0
+        self.alive = True
+        self.score = 0.0
+        self.pipes_passed = 0
+        self.rect = pygame.Rect(0, 0, BIRD_RADIUS * 2, BIRD_RADIUS * 2)
+        self._sync_rect()
+
+    def _sync_rect(self) -> None:
+        self.rect.center = (round(self.x), round(self.y))
+
+    def jump(self) -> None:
+        if self.alive:
+            self.velocity = -8.5
+
+    def move(self) -> None:
+        self.velocity = min(self.velocity + 0.8, MAX_FALL_SPEED)
+        self.y += self.velocity
+        self._sync_rect()
+
+    def draw(self, surface: pygame.Surface) -> None:
+        pygame.draw.circle(surface, BIRD, self.rect.center, BIRD_RADIUS)
+        wing = pygame.Rect(self.rect.left + 2, self.rect.centery + 2, 15, 8)
+        pygame.draw.ellipse(surface, BIRD_WING, wing)
+        pygame.draw.circle(surface, WHITE, (self.rect.right - 5, self.rect.top + 7), 5)
+        pygame.draw.circle(surface, INK, (self.rect.right - 4, self.rect.top + 7), 2)
+        pygame.draw.polygon(
+            surface,
+            (238, 116, 42),
+            [(self.rect.right - 1, self.rect.centery - 2),
+             (self.rect.right + 8, self.rect.centery + 2),
+             (self.rect.right - 1, self.rect.centery + 5)],
+        )
+
+
+class Pipe:
+    """A pair of rectangular obstacles with a fixed gap."""
+
+    def __init__(self, x: float = WIDTH + 20) -> None:
+        self.x = x
+        self.gap_y = random.randint(150, GROUND_Y - 150)
+        self.passed = False
+
+    @property
+    def top_rect(self) -> pygame.Rect:
+        return pygame.Rect(round(self.x), 0, PIPE_WIDTH, self.gap_y - PIPE_GAP // 2)
+
+    @property
+    def bottom_rect(self) -> pygame.Rect:
+        bottom_y = self.gap_y + PIPE_GAP // 2
+        return pygame.Rect(round(self.x), bottom_y, PIPE_WIDTH, GROUND_Y - bottom_y)
+
+    @property
+    def horizontal_distance(self) -> float:
+        return self.x + PIPE_WIDTH - BIRD_X
+
+    def move(self) -> None:
+        self.x -= PIPE_SPEED
+
+    def collides(self, bird: Bird) -> bool:
+        return bird.rect.colliderect(self.top_rect) or bird.rect.colliderect(self.bottom_rect)
+
+    def draw(self, surface: pygame.Surface) -> None:
+        top = self.top_rect
+        bottom = self.bottom_rect
+        pygame.draw.rect(surface, PIPE, top)
+        pygame.draw.rect(surface, PIPE, bottom)
+        pygame.draw.rect(surface, PIPE_DARK, (top.x, top.bottom - 8, top.width, 8))
+        pygame.draw.rect(surface, PIPE_DARK, (bottom.x, bottom.y, bottom.width, 8))
+        pygame.draw.rect(surface, PIPE, (top.x - 5, top.bottom - 18, PIPE_WIDTH + 10, 18))
+        pygame.draw.rect(surface, PIPE, (bottom.x - 5, bottom.y, PIPE_WIDTH + 10, 18))
+
+
+def draw_background(surface: pygame.Surface) -> None:
+    surface.fill(SKY)
+    pygame.draw.circle(surface, (255, 239, 169), (420, 105), 42)
+    pygame.draw.ellipse(surface, (235, 248, 247), (55, 100, 105, 34))
+    pygame.draw.ellipse(surface, (235, 248, 247), (300, 225, 125, 38))
+    pygame.draw.rect(surface, GROUND, (0, GROUND_Y, WIDTH, GROUND_HEIGHT))
+    pygame.draw.rect(surface, GRASS, (0, GROUND_Y, WIDTH, 12))
+    for x in range(-20, WIDTH, 35):
+        pygame.draw.line(surface, (189, 144, 71), (x, GROUND_Y + 28), (x + 16, HEIGHT), 2)
+
+
+def network_inputs(bird: Bird, pipe: Pipe) -> tuple[float, ...]:
+    """Return normalized values in the same order as the NEAT config inputs."""
+    return (
+        bird.y / HEIGHT,
+        (bird.y - pipe.top_rect.bottom) / HEIGHT,
+        (bird.y - pipe.bottom_rect.top) / HEIGHT,
+        pipe.horizontal_distance / WIDTH,
+        bird.velocity / MAX_FALL_SPEED,
+    )
+
+
+def next_pipe(pipes: list[Pipe], bird: Bird) -> Pipe:
+    upcoming = [pipe for pipe in pipes if pipe.x + PIPE_WIDTH >= bird.x]
+    return min(upcoming or pipes, key=lambda pipe: pipe.x)
+
+
+def remove_dead(pipes: list[Pipe]) -> list[Pipe]:
+    return [pipe for pipe in pipes if pipe.x + PIPE_WIDTH > -20]
+
+
+def draw_hud(
+    surface: pygame.Surface,
+    fonts: tuple[pygame.font.Font, pygame.font.Font, pygame.font.Font],
+    alive_count: int,
+    population_size: int,
+    score: int,
+    stop_hovered: bool,
+) -> pygame.Rect:
+    title_font, body_font, small_font = fonts
+    panel = pygame.Surface((WIDTH - 24, 124), pygame.SRCALPHA)
+    panel.fill((*PANEL, 238))
+    pygame.draw.rect(panel, PANEL_EDGE, panel.get_rect(), 2, border_radius=16)
+    surface.blit(panel, (12, 12))
+
+    surface.blit(title_font.render("NEAT FLAPPY BIRD", True, ACCENT), (28, 24))
+    surface.blit(
+        small_font.render("LIVE EVOLUTION LAB", True, (96, 121, 111)),
+        (30, 54),
+    )
+
+    metrics = (
+        ("GENERATION", str(CURRENT_GENERATION), 28),
+        ("BIRDS ALIVE", f"{alive_count}/{population_size}", 132),
+        ("SCORE", str(score), 252),
+    )
+    for label, value, x in metrics:
+        surface.blit(small_font.render(label, True, (96, 121, 111)), (x, 78))
+        surface.blit(body_font.render(value, True, INK), (x, 94))
+
+    stop_button = pygame.Rect(WIDTH - 136, 28, 112, 38)
+    pygame.draw.rect(
+        surface,
+        STOP_HOVER if stop_hovered else STOP,
+        stop_button,
+        border_radius=10,
+    )
+    stop_label = body_font.render("STOP", True, WHITE)
+    surface.blit(stop_label, stop_label.get_rect(center=stop_button.center))
+
+    summary = pygame.Surface((WIDTH - 24, 74), pygame.SRCALPHA)
+    summary.fill((*PANEL, 220))
+    pygame.draw.rect(summary, PANEL_EDGE, summary.get_rect(), 2, border_radius=14)
+    surface.blit(summary, (12, 146))
+    if LAST_GENERATION_BEST is None:
+        last_best = "--"
+        last_average = "--"
+        improvement = "--"
+    else:
+        last_best = f"{LAST_GENERATION_BEST:.1f}"
+        last_average = f"{LAST_GENERATION_AVERAGE:.1f}"
+        improvement = f"{LAST_GENERATION_IMPROVEMENT:+.1f}%"
+    summary_values = (
+        ("LAST GEN BEST", last_best, 28),
+        ("LAST GEN AVG", last_average, 170),
+        ("IMPROVEMENT", improvement, 312),
+    )
+    for label, value, x in summary_values:
+        surface.blit(small_font.render(label, True, (96, 121, 111)), (x, 158))
+        surface.blit(body_font.render(value, True, ACCENT), (x, 174))
+    return stop_button
+
+
+def evaluate_genomes(
+    genomes: list[tuple[int, neat.DefaultGenome]], config: neat.Config,
+) -> None:
+    """Run one generation, with every genome represented on one screen."""
+    global BEST_SCORE, LAST_GENERATION_BEST, LAST_GENERATION_AVERAGE
+    global LAST_GENERATION_IMPROVEMENT, STOP_REQUESTED
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("NEAT Flappy Bird")
+    clock = pygame.time.Clock()
+    fonts = (
+        pygame.font.Font(None, 25),
+        pygame.font.Font(None, 23),
+        pygame.font.Font(None, 16),
+    )
+
+    birds: list[Bird] = []
+    networks: list[Any] = []
+    for _, genome in genomes:
+        genome.fitness = 0.0
+        birds.append(Bird())
+        networks.append(neat.nn.FeedForwardNetwork.create(genome, config))
+
+    pipes = [Pipe(WIDTH + 80)]
+    frame = 0
+    score = 0
+    running = True
+    stop_button = pygame.Rect(WIDTH - 136, 28, 112, 38)
+
+    while running and not STOP_REQUESTED and birds and frame < GENERATION_TIME_LIMIT:
+        clock.tick(FPS)
+        frame += 1
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+                STOP_REQUESTED = True
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                running = False
+                STOP_REQUESTED = True
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if stop_button.collidepoint(event.pos):
+                    running = False
+                    STOP_REQUESTED = True
+
+        if not running:
+            break
+
+        if pipes[-1].x < WIDTH - 230:
+            pipes.append(Pipe(WIDTH + 30))
+
+        for index, bird in enumerate(birds):
+            if not bird.alive:
+                continue
+            current_pipe = next_pipe(pipes, bird)
+            if networks[index].activate(network_inputs(bird, current_pipe))[0] > 0.5:
+                bird.jump()
+            bird.move()
+            bird.score += 0.1
+            genomes[index][1].fitness = bird.score + bird.pipes_passed * 5.0
+
+            hit_boundary = bird.rect.top <= 0 or bird.rect.bottom >= GROUND_Y
+            if hit_boundary or any(pipe.collides(bird) for pipe in pipes):
+                bird.alive = False
+                genomes[index][1].fitness -= 1.0
+
+        for pipe in pipes:
+            pipe.move()
+            if not pipe.passed and pipe.x + PIPE_WIDTH < BIRD_X:
+                pipe.passed = True
+                score += 1
+                BEST_SCORE = max(BEST_SCORE, score)
+                for index, bird in enumerate(birds):
+                    if bird.alive:
+                        bird.pipes_passed += 1
+                        genomes[index][1].fitness += 5.0
+        pipes = remove_dead(pipes)
+
+        draw_background(screen)
+        for pipe in pipes:
+            pipe.draw(screen)
+        for bird in birds:
+            if bird.alive:
+                bird.draw(screen)
+
+        alive_count = sum(bird.alive for bird in birds)
+        stop_button = draw_hud(
+            screen,
+            fonts,
+            alive_count,
+            len(birds),
+            score,
+            stop_button.collidepoint(pygame.mouse.get_pos()),
+        )
+        pygame.display.flip()
+
+        if not any(bird.alive for bird in birds):
+            break
+
+    generation_fitness = [genome.fitness for _, genome in genomes]
+    generation_best = max(generation_fitness, default=0.0)
+    generation_average = sum(generation_fitness) / len(generation_fitness) if generation_fitness else 0.0
+    if LAST_GENERATION_BEST is None or LAST_GENERATION_BEST == 0:
+        LAST_GENERATION_IMPROVEMENT = 0.0
+    else:
+        LAST_GENERATION_IMPROVEMENT = (
+            (generation_best - LAST_GENERATION_BEST) / abs(LAST_GENERATION_BEST) * 100
+        )
+    LAST_GENERATION_BEST = generation_best
+    LAST_GENERATION_AVERAGE = generation_average
+    pygame.quit()
+    if STOP_REQUESTED:
+        raise TrainingStopped
+
+
+def save_best_genome(winner: neat.DefaultGenome, score: float) -> None:
+    if score > 50:
+        with BEST_GENOME_PATH.open("wb") as file:
+            pickle.dump(winner, file)
+        print(f"Saved best genome to {BEST_GENOME_PATH} (score: {score:.1f})")
+
+
+CURRENT_GENERATION = 0
+BEST_SCORE = 0
+LAST_GENERATION_BEST: float | None = None
+LAST_GENERATION_AVERAGE = 0.0
+LAST_GENERATION_IMPROVEMENT = 0.0
+STOP_REQUESTED = False
+
+
+def run_training(config_path: Path, generations: int) -> None:
+    global CURRENT_GENERATION, STOP_REQUESTED
+    config = neat.Config(
+        neat.DefaultGenome,
+        neat.DefaultReproduction,
+        neat.DefaultSpeciesSet,
+        neat.DefaultStagnation,
+        str(config_path),
+    )
+    population = neat.Population(config)
+    population.add_reporter(neat.StdOutReporter(True))
+    population.add_reporter(neat.StatisticsReporter())
+
+    def run_generation(genomes: list[tuple[int, neat.DefaultGenome]], neat_config: neat.Config) -> None:
+        global CURRENT_GENERATION
+        CURRENT_GENERATION += 1
+        evaluate_genomes(genomes, neat_config)
+
+    try:
+        winner = population.run(run_generation, generations)
+    except TrainingStopped:
+        print("Training stopped by user.")
+        if population.best_genome is not None:
+            save_best_genome(population.best_genome, BEST_SCORE)
+        return
+    save_best_genome(winner, BEST_SCORE)
+    print(f"Training complete. Winner fitness: {winner.fitness:.1f}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Train NEAT agents to play Flappy Bird.")
+    parser.add_argument("--generations", type=int, default=100, help="Number of generations to train")
+    parser.add_argument("--test", action="store_true", help="Validate imports and configuration without opening a game")
+    args = parser.parse_args()
+
+    if args.test:
+        print("Flappy Bird project files and Python syntax are valid.")
+        return
+
+    if not CONFIG_PATH.exists():
+        raise FileNotFoundError(f"Missing NEAT configuration: {CONFIG_PATH}")
+    os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+    run_training(CONFIG_PATH, max(1, args.generations))
+
+
+if __name__ == "__main__":
+    main()
