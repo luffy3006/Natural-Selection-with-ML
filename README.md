@@ -20,11 +20,25 @@ python3 -m venv ../../.venv-flappy-bird
 ../../.venv-flappy-bird/bin/python main.py
 ```
 
-Train for a chosen number of generations:
+Train visually for a chosen number of generations:
 
 ```bash
 ../../.venv-flappy-bird/bin/python main.py --generations 100
 ```
+
+Fast, reproducible headless training:
+
+```bash
+../../.venv-flappy-bird/bin/python main.py --generations 100 --headless --seed 42
+```
+
+Checkpoints are saved every 10 generations by default. Resume from one with:
+
+```bash
+../../.venv-flappy-bird/bin/python main.py --resume neat-checkpoint-10 --generations 100 --headless
+```
+
+Disable checkpoint files with `--checkpoint-interval 0`.
 
 Validate the files and installed dependencies:
 
@@ -32,7 +46,19 @@ Validate the files and installed dependencies:
 ../../.venv-flappy-bird/bin/python main.py --test
 ```
 
-The best genome is saved as `best_bird.pkl` after the score exceeds 50.
+The best genome is saved as `best_bird.pkl` whenever a generation produces a new best fitness.
+
+Replay the saved genome:
+
+```bash
+../../.venv-flappy-bird/bin/python main.py --play-best
+```
+
+The saved genome includes its fitness, generation, pipe score, seed, and save timestamp. Use `pytest` to run the pure-logic tests:
+
+```bash
+../../.venv-flappy-bird/bin/python -m pytest -q
+```
 
 ## GPU usage
 

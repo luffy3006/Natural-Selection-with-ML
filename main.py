@@ -10,9 +10,11 @@ Run a dependency-free syntax check:
 from __future__ import annotations
 
 import argparse
+import copy
 import os
 import pickle
 import random
+import time
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,11 @@ MAX_FALL_SPEED = 12
 GENERATION_TIME_LIMIT = 30 * FPS
 BEST_GENOME_PATH = Path(__file__).with_name("best_bird.pkl")
 CONFIG_PATH = Path(__file__).with_name("config-feedforward.txt")
+CHECKPOINT_PREFIX = str(Path(__file__).with_name("neat-checkpoint-"))
+ACTION_THRESHOLD = 0.0
+SURVIVAL_REWARD = 0.05
+PIPE_REWARD = 8.0
+DEATH_PENALTY = 5.0
 
 SKY = (117, 205, 238)
 GROUND = (218, 177, 92)
@@ -53,6 +60,16 @@ STOP_HOVER = (215, 78, 69)
 
 class TrainingStopped(Exception):
     """Raised when the player clicks the in-game stop control."""
+
+
+def clamp(value: float, minimum: float = -1.0, maximum: float = 1.0) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def percentage_improvement(current: float, previous: float | None) -> float:
+    if previous is None or previous == 0:
+        return 0.0
+    return (current - previous) / abs(previous) * 100.0
 
 
 class Bird:
@@ -98,9 +115,9 @@ class Bird:
 class Pipe:
     """A pair of rectangular obstacles with a fixed gap."""
 
-    def __init__(self, x: float = WIDTH + 20) -> None:
+    def __init__(self, x: float = WIDTH + 20, rng: random.Random | None = None) -> None:
         self.x = x
-        self.gap_y = random.randint(150, GROUND_Y - 150)
+        self.gap_y = (rng or random).randint(150, GROUND_Y - 150)
         self.passed = False
 
     @property
@@ -145,13 +162,13 @@ def draw_background(surface: pygame.Surface) -> None:
 
 
 def network_inputs(bird: Bird, pipe: Pipe) -> tuple[float, ...]:
-    """Return normalized values in the same order as the NEAT config inputs."""
+    """Return bounded normalized values in the same order as the NEAT config."""
     return (
-        bird.y / HEIGHT,
-        (bird.y - pipe.top_rect.bottom) / HEIGHT,
-        (bird.y - pipe.bottom_rect.top) / HEIGHT,
-        pipe.horizontal_distance / WIDTH,
-        bird.velocity / MAX_FALL_SPEED,
+        clamp((bird.y / HEIGHT) * 2.0 - 1.0),
+        clamp((bird.y - pipe.top_rect.bottom) / (HEIGHT / 2.0)),
+        clamp((bird.y - pipe.bottom_rect.top) / (HEIGHT / 2.0)),
+        clamp(pipe.horizontal_distance / WIDTH),
+        clamp(bird.velocity / MAX_FALL_SPEED),
     )
 
 
@@ -227,20 +244,28 @@ def draw_hud(
 
 
 def evaluate_genomes(
-    genomes: list[tuple[int, neat.DefaultGenome]], config: neat.Config,
+    genomes: list[tuple[int, neat.DefaultGenome]],
+    config: neat.Config,
+    render: bool = True,
+    rng: random.Random | None = None,
 ) -> None:
     """Run one generation, with every genome represented on one screen."""
     global BEST_SCORE, LAST_GENERATION_BEST, LAST_GENERATION_AVERAGE
     global LAST_GENERATION_IMPROVEMENT, STOP_REQUESTED
-    pygame.init()
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("NEAT Flappy Bird")
-    clock = pygame.time.Clock()
-    fonts = (
-        pygame.font.Font(None, 25),
-        pygame.font.Font(None, 23),
-        pygame.font.Font(None, 16),
-    )
+    rng = rng or random
+    screen = None
+    clock = None
+    fonts = None
+    if render:
+        pygame.init()
+        screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        pygame.display.set_caption("NEAT Flappy Bird")
+        clock = pygame.time.Clock()
+        fonts = (
+            pygame.font.Font(None, 25),
+            pygame.font.Font(None, 23),
+            pygame.font.Font(None, 16),
+        )
 
     birds: list[Bird] = []
     networks: list[Any] = []
@@ -249,47 +274,49 @@ def evaluate_genomes(
         birds.append(Bird())
         networks.append(neat.nn.FeedForwardNetwork.create(genome, config))
 
-    pipes = [Pipe(WIDTH + 80)]
+    pipes = [Pipe(WIDTH + 80, rng)]
     frame = 0
     score = 0
     running = True
     stop_button = pygame.Rect(WIDTH - 136, 28, 112, 38)
 
     while running and not STOP_REQUESTED and birds and frame < GENERATION_TIME_LIMIT:
-        clock.tick(FPS)
+        if clock is not None:
+            clock.tick(FPS)
         frame += 1
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-                STOP_REQUESTED = True
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                running = False
-                STOP_REQUESTED = True
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if stop_button.collidepoint(event.pos):
+        if render:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
                     running = False
                     STOP_REQUESTED = True
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    running = False
+                    STOP_REQUESTED = True
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    if stop_button.collidepoint(event.pos):
+                        running = False
+                        STOP_REQUESTED = True
 
         if not running:
             break
 
         if pipes[-1].x < WIDTH - 230:
-            pipes.append(Pipe(WIDTH + 30))
+            pipes.append(Pipe(WIDTH + 30, rng))
 
         for index, bird in enumerate(birds):
             if not bird.alive:
                 continue
             current_pipe = next_pipe(pipes, bird)
-            if networks[index].activate(network_inputs(bird, current_pipe))[0] > 0.5:
+            if networks[index].activate(network_inputs(bird, current_pipe))[0] > ACTION_THRESHOLD:
                 bird.jump()
             bird.move()
-            bird.score += 0.1
-            genomes[index][1].fitness = bird.score + bird.pipes_passed * 5.0
+            bird.score += SURVIVAL_REWARD
+            genomes[index][1].fitness = bird.score + bird.pipes_passed * PIPE_REWARD
 
             hit_boundary = bird.rect.top <= 0 or bird.rect.bottom >= GROUND_Y
             if hit_boundary or any(pipe.collides(bird) for pipe in pipes):
                 bird.alive = False
-                genomes[index][1].fitness -= 1.0
+                genomes[index][1].fitness -= DEATH_PENALTY
 
         for pipe in pipes:
             pipe.move()
@@ -300,26 +327,27 @@ def evaluate_genomes(
                 for index, bird in enumerate(birds):
                     if bird.alive:
                         bird.pipes_passed += 1
-                        genomes[index][1].fitness += 5.0
+                        genomes[index][1].fitness += PIPE_REWARD
         pipes = remove_dead(pipes)
 
-        draw_background(screen)
-        for pipe in pipes:
-            pipe.draw(screen)
-        for bird in birds:
-            if bird.alive:
-                bird.draw(screen)
+        if render and screen is not None and fonts is not None:
+            draw_background(screen)
+            for pipe in pipes:
+                pipe.draw(screen)
+            for bird in birds:
+                if bird.alive:
+                    bird.draw(screen)
 
-        alive_count = sum(bird.alive for bird in birds)
-        stop_button = draw_hud(
-            screen,
-            fonts,
-            alive_count,
-            len(birds),
-            score,
-            stop_button.collidepoint(pygame.mouse.get_pos()),
-        )
-        pygame.display.flip()
+            alive_count = sum(bird.alive for bird in birds)
+            stop_button = draw_hud(
+                screen,
+                fonts,
+                alive_count,
+                len(birds),
+                score,
+                stop_button.collidepoint(pygame.mouse.get_pos()),
+            )
+            pygame.display.flip()
 
         if not any(bird.alive for bird in birds):
             break
@@ -327,36 +355,50 @@ def evaluate_genomes(
     generation_fitness = [genome.fitness for _, genome in genomes]
     generation_best = max(generation_fitness, default=0.0)
     generation_average = sum(generation_fitness) / len(generation_fitness) if generation_fitness else 0.0
-    if LAST_GENERATION_BEST is None or LAST_GENERATION_BEST == 0:
-        LAST_GENERATION_IMPROVEMENT = 0.0
-    else:
-        LAST_GENERATION_IMPROVEMENT = (
-            (generation_best - LAST_GENERATION_BEST) / abs(LAST_GENERATION_BEST) * 100
-        )
+    LAST_GENERATION_IMPROVEMENT = percentage_improvement(generation_best, LAST_GENERATION_BEST)
     LAST_GENERATION_BEST = generation_best
     LAST_GENERATION_AVERAGE = generation_average
-    pygame.quit()
+    if render:
+        pygame.quit()
     if STOP_REQUESTED:
         raise TrainingStopped
 
 
-def save_best_genome(winner: neat.DefaultGenome, score: float) -> None:
-    if score > 50:
-        with BEST_GENOME_PATH.open("wb") as file:
-            pickle.dump(winner, file)
-        print(f"Saved best genome to {BEST_GENOME_PATH} (score: {score:.1f})")
+def save_best_genome(
+    winner: neat.DefaultGenome,
+    score: int,
+    generation: int,
+    fitness: float,
+    seed: int | None,
+) -> None:
+    global BEST_GENOME_FITNESS
+    payload = {
+        "genome": copy.deepcopy(winner),
+        "generation": generation,
+        "fitness": fitness,
+        "pipe_score": score,
+        "seed": seed,
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    with BEST_GENOME_PATH.open("wb") as file:
+        pickle.dump(payload, file)
+    BEST_GENOME_FITNESS = fitness
+    print(
+        f"Saved best genome to {BEST_GENOME_PATH} "
+        f"(fitness: {fitness:.1f}, score: {score})"
+    )
 
 
-CURRENT_GENERATION = 0
-BEST_SCORE = 0
-LAST_GENERATION_BEST: float | None = None
-LAST_GENERATION_AVERAGE = 0.0
-LAST_GENERATION_IMPROVEMENT = 0.0
-STOP_REQUESTED = False
+def load_best_genome() -> tuple[neat.DefaultGenome, dict[str, Any]]:
+    with BEST_GENOME_PATH.open("rb") as file:
+        payload = pickle.load(file)
+    if isinstance(payload, dict) and "genome" in payload:
+        return payload["genome"], payload
+    return payload, {"fitness": None, "pipe_score": None}
 
 
-def run_training(config_path: Path, generations: int) -> None:
-    global CURRENT_GENERATION, STOP_REQUESTED
+def play_best(config_path: Path) -> None:
+    genome, metadata = load_best_genome()
     config = neat.Config(
         neat.DefaultGenome,
         neat.DefaultReproduction,
@@ -364,29 +406,142 @@ def run_training(config_path: Path, generations: int) -> None:
         neat.DefaultStagnation,
         str(config_path),
     )
-    population = neat.Population(config)
+    network = neat.nn.FeedForwardNetwork.create(genome, config)
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("NEAT Flappy Bird - Best Genome")
+    clock = pygame.time.Clock()
+    font = pygame.font.Font(None, 24)
+    bird = Bird()
+    pipes = [Pipe(WIDTH + 80)]
+    score = 0
+    running = True
+
+    while running and bird.alive:
+        clock.tick(FPS)
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT or (
+                event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
+            ):
+                running = False
+        if not running:
+            break
+        if pipes[-1].x < WIDTH - 230:
+            pipes.append(Pipe(WIDTH + 30))
+        current_pipe = next_pipe(pipes, bird)
+        if network.activate(network_inputs(bird, current_pipe))[0] > ACTION_THRESHOLD:
+            bird.jump()
+        bird.move()
+        if bird.rect.top <= 0 or bird.rect.bottom >= GROUND_Y:
+            bird.alive = False
+        for pipe in pipes:
+            if pipe.collides(bird):
+                bird.alive = False
+            pipe.move()
+            if not pipe.passed and pipe.x + PIPE_WIDTH < BIRD_X:
+                pipe.passed = True
+                score += 1
+        pipes = remove_dead(pipes)
+        draw_background(screen)
+        for pipe in pipes:
+            pipe.draw(screen)
+        if bird.alive:
+            bird.draw(screen)
+        label = font.render(
+            f"Best genome | score: {score} | fitness: {metadata.get('fitness', '--')}",
+            True,
+            INK,
+        )
+        screen.blit(label, (16, HEIGHT - 42))
+        pygame.display.flip()
+    pygame.quit()
+
+
+CURRENT_GENERATION = 0
+BEST_SCORE = 0
+BEST_GENOME_FITNESS: float | None = None
+LAST_GENERATION_BEST: float | None = None
+LAST_GENERATION_AVERAGE = 0.0
+LAST_GENERATION_IMPROVEMENT = 0.0
+STOP_REQUESTED = False
+
+
+def run_training(
+    config_path: Path,
+    generations: int,
+    render: bool = True,
+    seed: int | None = None,
+    resume: Path | None = None,
+    checkpoint_interval: int = 10,
+) -> None:
+    global CURRENT_GENERATION, STOP_REQUESTED, BEST_GENOME_FITNESS
+    STOP_REQUESTED = False
+    if seed is not None:
+        random.seed(seed)
+    rng = random.Random(seed)
+    if BEST_GENOME_PATH.exists():
+        try:
+            _, metadata = load_best_genome()
+            BEST_GENOME_FITNESS = metadata.get("fitness")
+        except (OSError, pickle.PickleError, EOFError, AttributeError, KeyError):
+            BEST_GENOME_FITNESS = None
+    config = neat.Config(
+        neat.DefaultGenome,
+        neat.DefaultReproduction,
+        neat.DefaultSpeciesSet,
+        neat.DefaultStagnation,
+        str(config_path),
+    )
+    if resume is not None:
+        population = neat.Checkpointer.restore_checkpoint(str(resume))
+        CURRENT_GENERATION = population.generation
+    else:
+        population = neat.Population(config)
     population.add_reporter(neat.StdOutReporter(True))
     population.add_reporter(neat.StatisticsReporter())
+    if checkpoint_interval > 0:
+        population.add_reporter(
+            neat.Checkpointer(
+                checkpoint_interval,
+                filename_prefix=CHECKPOINT_PREFIX,
+            )
+        )
 
     def run_generation(genomes: list[tuple[int, neat.DefaultGenome]], neat_config: neat.Config) -> None:
         global CURRENT_GENERATION
         CURRENT_GENERATION += 1
-        evaluate_genomes(genomes, neat_config)
+        evaluate_genomes(genomes, neat_config, render=render, rng=rng)
+        generation_winner = max(genomes, key=lambda item: item[1].fitness)[1]
+        if BEST_GENOME_FITNESS is None or generation_winner.fitness > BEST_GENOME_FITNESS:
+            save_best_genome(
+                generation_winner,
+                BEST_SCORE,
+                CURRENT_GENERATION,
+                generation_winner.fitness,
+                seed,
+            )
 
     try:
         winner = population.run(run_generation, generations)
     except TrainingStopped:
         print("Training stopped by user.")
-        if population.best_genome is not None:
-            save_best_genome(population.best_genome, BEST_SCORE)
         return
-    save_best_genome(winner, BEST_SCORE)
     print(f"Training complete. Winner fitness: {winner.fitness:.1f}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train NEAT agents to play Flappy Bird.")
     parser.add_argument("--generations", type=int, default=100, help="Number of generations to train")
+    parser.add_argument("--headless", action="store_true", help="Train without opening a Pygame window")
+    parser.add_argument("--play-best", action="store_true", help="Replay the saved best genome")
+    parser.add_argument("--seed", type=int, help="Seed random generation for reproducible runs")
+    parser.add_argument("--resume", type=Path, help="Resume from a neat-checkpoint file")
+    parser.add_argument(
+        "--checkpoint-interval",
+        type=int,
+        default=10,
+        help="Save a NEAT checkpoint every N generations; use 0 to disable",
+    )
     parser.add_argument("--test", action="store_true", help="Validate imports and configuration without opening a game")
     args = parser.parse_args()
 
@@ -397,7 +552,19 @@ def main() -> None:
     if not CONFIG_PATH.exists():
         raise FileNotFoundError(f"Missing NEAT configuration: {CONFIG_PATH}")
     os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-    run_training(CONFIG_PATH, max(1, args.generations))
+    if args.play_best:
+        if not BEST_GENOME_PATH.exists():
+            raise FileNotFoundError(f"No saved genome found at {BEST_GENOME_PATH}")
+        play_best(CONFIG_PATH)
+        return
+    run_training(
+        CONFIG_PATH,
+        max(1, args.generations),
+        render=not args.headless,
+        seed=args.seed,
+        resume=args.resume,
+        checkpoint_interval=max(0, args.checkpoint_interval),
+    )
 
 
 if __name__ == "__main__":

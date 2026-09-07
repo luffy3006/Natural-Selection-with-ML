@@ -12,7 +12,7 @@ This is a Python Flappy Bird simulation that uses Pygame for the game loop and d
 - `config-feedforward.txt`: NEAT population, genome, mutation, species, and reproduction settings.
 - `README.md`: installation and run instructions.
 - `.gitignore`: ignores Python caches, virtual environments, `.env`, and `best_bird.pkl`.
-- `best_bird.pkl`: generated only when a saved run reaches the score threshold; it is ignored by Git.
+- `best_bird.pkl`: generated whenever a generation produces a new best fitness; it is ignored by Git.
 
 ## Runtime setup
 
@@ -159,6 +159,7 @@ NEAT maximizes fitness because the config uses `fitness_criterion = max`.
 
 Global state tracks:
 
+- `CURRENT_GENERATION`: incremented before each NEAT evaluation ca
 - `CURRENT_GENERATION`: incremented before each NEAT evaluation callback.
 - `BEST_SCORE`: highest displayed pipe score encountered during the process.
 - `LAST_GENERATION_BEST`: highest genome fitness from the most recently completed generation.
@@ -193,7 +194,7 @@ The player can stop by:
 - Pressing Escape.
 - Closing the window.
 
-Stopping raises `TrainingStopped` after the current evaluation cleans up Pygame. `run_training()` catches it, prints a message, and attempts to save the population's best genome if the score threshold has been reached.
+Stopping raises `TrainingStopped` after the current evaluation cleans up Pygame. `run_training()` catches it and keeps the best genome saved during completed generations.
 
 ## Genome persistence
 
@@ -201,7 +202,7 @@ Stopping raises `TrainingStopped` after the current evaluation cleans up Pygame.
 - The winning genome is serialized with Python `pickle`.
 - Saving occurs only when `BEST_SCORE > 50`.
 - The file is ignored by Git.
-- There is currently no `--play-best` mode to load and replay the saved genome.
+- `--play-best` loads and replays the saved genome as a single bird.
 
 ## NEAT configuration
 
@@ -255,6 +256,18 @@ Stopping raises `TrainingStopped` after the current evaluation cleans up Pygame.
 - A desktop compositor may use the GPU to present the window, but that does not accelerate training.
 - GPU acceleration is probably unnecessary for a population of 50 tiny feed-forward networks; larger populations or parallel/headless simulations could benefit from multiprocessing or a specialized numerical backend.
 
+## Implemented roadmap improvements
+
+- `--headless` skips Pygame display, event, font, and frame-rate work for fast training.
+- `--seed N` makes pipe generation and training randomness reproducible.
+- `--checkpoint-interval N` writes NEAT checkpoints; `--resume FILE` continues from one.
+- Inputs are clipped to `[-1, 1]` before entering the tanh network.
+- The tanh action boundary is explicit and symmetric at `0.0`.
+- Fitness weights are named constants: survival `0.05`, pipe pass `8.0`, death `-5.0`.
+- Best-genome files contain the genome plus generation, fitness, pipe score, seed, and timestamp.
+- `--play-best` replays the saved genome in a single-bird visual window.
+- `test_main.py` covers deterministic pipes, input bounds, gravity, collision, and improvement math.
+
 ## Current limitations and possible improvement areas
 
 These are areas to ask Claude to review rather than claims that they are already fixed:
@@ -264,19 +277,19 @@ These are areas to ask Claude to review rather than claims that they are already
 3. Input normalization is only approximate. Distances can be outside `[-1, 1]`, and tanh networks may saturate.
 4. All birds share the same randomly generated pipe sequence within a generation, which is useful for comparison but can reduce environmental diversity.
 5. The displayed score is global to a generation, while fitness is per bird. Decide whether score should be best-bird score, average score, or pipe count shared by the environment.
-6. The best genome is saved based on the global pipe score threshold, but the selected winner is the final NEAT winner. A more robust system would save the best genome whenever its own fitness improves and store metadata with it.
-7. There is no replay/evaluation mode for `best_bird.pkl`.
+6. Best-genome metadata and replay are now implemented; a future improvement could add multi-run evaluation statistics.
+7. There is no automated benchmark comparing multiple saved genomes across fixed seeds.
 8. There are no automated unit tests for physics, pipe placement, collision, input normalization, fitness, or stop behavior.
-9. Rendering happens during training, which makes training slower. A headless mode or configurable render interval could improve training speed.
+9. Headless mode is implemented; a future render interval could support occasional visual monitoring during fast training.
 10. Pygame is initialized and quit for every generation. Keeping one window alive across generations may reduce overhead and preserve smoother UI state.
 11. The button is drawn and checked manually; a small UI abstraction would help if more controls are added.
-12. The network output threshold `0.5` is arbitrary for tanh. Compare thresholds such as `0`, `0.25`, and `0.5`, or use sigmoid activation where `0.5` is more natural.
+12. The tanh output threshold is now `0.0`; compare it against other action designs through benchmark runs.
 13. The generation time limit is fixed at 30 seconds. Consider ending based on progress, maximum fitness, or a configurable frame limit.
-14. Randomness is not seeded, so runs cannot currently be reproduced exactly.
+14. A `--seed` option is implemented; reproducibility still depends on keeping the same code, config, and dependency versions.
 15. The current summary compares best fitness values, not pipe scores. Decide which metric is more meaningful for users.
 16. The project does not use GPU acceleration. For this small problem, CPU is appropriate, but multiprocessing could be tested before adding GPU complexity.
-17. There is no checkpoint/resume support, so stopping loses the in-memory population except for the optional best pickle.
-18. The only command-line options are `--generations` and `--test`; options for seed, render/headless mode, population size, speed, and threshold could improve experimentation.
+17. Checkpoint/resume support is implemented; a future improvement could checkpoint UI state and benchmark metadata too.
+18. The CLI now supports generations, headless mode, seed, checkpoint interval, resume, play-best, and test; population size and physics overrides remain config-level changes.
 19. The code uses global state for HUD/training metrics. A training-state object would make the code easier to test and extend.
 20. The game has no human-play mode, pause control, restart control, or separate trained-agent demonstration mode.
 

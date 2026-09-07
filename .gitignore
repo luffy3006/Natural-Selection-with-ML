@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
 best_bird.pkl
+neat-checkpoint-*
 .venv/
 .env
