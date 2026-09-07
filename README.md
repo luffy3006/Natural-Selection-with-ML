@@ -66,6 +66,11 @@ Play manually with `Space` to flap, `P` to pause, and `R` to restart:
 ../../.venv-flappy-bird/bin/python main.py --human
 ```
 
+Human mode does not train the AI or make training faster. It is a gameplay and
+comparison mode. While playing, it shows the saved AI's best pipe score and the
+generation in which that saved record was reached. At the end, the terminal
+prints your best score for the session and the AI record.
+
 The saved genome includes its fitness, generation, pipe score, seed, and save timestamp. Use `pytest` to run the pure-logic tests:
 
 ```bash

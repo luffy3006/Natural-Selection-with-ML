@@ -15,6 +15,7 @@ import os
 import pickle
 import random
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -470,9 +471,20 @@ def play_human() -> None:
     pygame.display.set_caption("NEAT Flappy Bird - Human Mode")
     clock = pygame.time.Clock()
     font = pygame.font.Font(None, 24)
+    button_font = pygame.font.Font(None, 22)
+    comparison_font = pygame.font.Font(None, 20)
+    restart_button = pygame.Rect(WIDTH - 238, 18, 106, 36)
+    exit_button = pygame.Rect(WIDTH - 122, 18, 106, 36)
+    try:
+        _, best_metadata = load_best_genome()
+    except (OSError, pickle.PickleError, EOFError, AttributeError, KeyError):
+        best_metadata = {}
+    ai_best_score = int(best_metadata.get("pipe_score") or 0)
+    ai_best_generation = best_metadata.get("generation", "--")
     bird = Bird()
     pipes = [Pipe(WIDTH + 80)]
     score = 0
+    session_best_score = 0
     paused = False
     running = True
 
@@ -493,6 +505,14 @@ def play_human() -> None:
                     pipes = [Pipe(WIDTH + 80)]
                     score = 0
                     paused = False
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if restart_button.collidepoint(event.pos):
+                    bird = Bird()
+                    pipes = [Pipe(WIDTH + 80)]
+                    score = 0
+                    paused = False
+                elif exit_button.collidepoint(event.pos):
+                    running = False
         if not running:
             break
         if not paused and bird.alive:
@@ -508,6 +528,7 @@ def play_human() -> None:
                 if not pipe.passed and pipe.x + PIPE_WIDTH < BIRD_X:
                     pipe.passed = True
                     score += 1
+                    session_best_score = max(session_best_score, score)
             pipes = remove_dead(pipes)
 
         draw_background(screen)
@@ -515,11 +536,50 @@ def play_human() -> None:
             pipe.draw(screen)
         if bird.alive:
             bird.draw(screen)
+        score_label = font.render(
+            f"SCORE: {score}    SESSION BEST: {session_best_score}",
+            True,
+            INK,
+        )
+        screen.blit(score_label, (16, 28))
         status = "PAUSED - P resume | R restart" if paused else "SPACE jump | P pause | R restart"
         if not bird.alive:
             status = f"Game over: {score} pipes | R restart | Esc quit"
+        info_panel = pygame.Surface((WIDTH - 24, 76), pygame.SRCALPHA)
+        info_panel.fill((*PANEL, 225))
+        pygame.draw.rect(info_panel, PANEL_EDGE, info_panel.get_rect(), 2, border_radius=12)
+        screen.blit(info_panel, (12, HEIGHT - 88))
         draw_simple_status(screen, font, status)
+        if ai_best_score:
+            if score <= ai_best_score:
+                comparison = (
+                    f"AI reached this position in Gen {ai_best_generation} "
+                    f"(AI best: {ai_best_score})"
+                )
+            else:
+                comparison = (
+                    f"You passed AI best! AI record: {ai_best_score} "
+                    f"(Gen {ai_best_generation})"
+                )
+        else:
+            comparison = "No saved AI record yet - train the AI first"
+        comparison_label = comparison_font.render(comparison, True, INK)
+        screen.blit(comparison_label, (16, HEIGHT - 68))
+        mouse_position = pygame.mouse.get_pos()
+        for button, label in (
+            (restart_button, "RESTART"),
+            (exit_button, "EXIT"),
+        ):
+            hovered = button.collidepoint(mouse_position)
+            color = ACCENT if hovered else (45, 91, 80)
+            pygame.draw.rect(screen, color, button, border_radius=8)
+            button_label = button_font.render(label, True, WHITE)
+            screen.blit(button_label, button_label.get_rect(center=button.center))
         pygame.display.flip()
+    print(
+        f"Human session best: {session_best_score} pipes. "
+        f"AI record: {ai_best_score} pipes, reached in generation {ai_best_generation}."
+    )
     pygame.quit()
 
 
@@ -531,6 +591,7 @@ ALL_TIME_BEST_SCORE = 0
 LAST_GENERATION_BEST: float | None = None
 LAST_GENERATION_AVERAGE = 0.0
 LAST_GENERATION_IMPROVEMENT = 0.0
+RECENT_IMPROVEMENTS: deque[float] = deque(maxlen=5)
 STOP_REQUESTED = False
 
 
