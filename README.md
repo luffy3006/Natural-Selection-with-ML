@@ -1,84 +1,61 @@
-# NEAT Flappy Bird
+# NEAT Game Lab
 
-A procedurally drawn Flappy Bird simulation trained with `neat-python`. The game runs 50 birds concurrently and displays the current generation, living population, and score.
+Two small procedural Pygame games trained with `neat-python`:
 
-## Install
+- `flappy_bird/` — the original shared-pipe Flappy Bird simulation.
+- `dino_runner/` — an endless runner with cactus-jump and low-bird-duck avoidance.
+- `common/` — shared `hud.py`, `training_state.py`, `stop_button.py`, and
+  `human_input.py` helpers (with `common.ui` kept as a compatibility import).
+- `tests/` — pure-logic tests for both games.
 
-From this project directory:
+## Setup
+
+From the repository root:
 
 ```bash
 python3 -m venv ../../.venv-flappy-bird
-../../.venv-flappy-bird/bin/python -m pip install --upgrade pip
-../../.venv-flappy-bird/bin/python -m pip install pygame-ce neat-python
+../../.venv-flappy-bird/bin/python -m pip install pygame-ce neat-python pytest
 ```
 
-`pygame-ce` provides the `pygame` import and is used here because it supports Python 3.14.
+## Commands
 
-## Run
+Both games support visual training, deterministic headless training, validation,
+checkpoints, and replay of the saved best genome:
 
 ```bash
-../../.venv-flappy-bird/bin/python main.py
+../../.venv-flappy-bird/bin/python -m flappy_bird.main --generations 100
+../../.venv-flappy-bird/bin/python -m flappy_bird.main --generations 2 --headless --seed 42
+../../.venv-flappy-bird/bin/python -m flappy_bird.main --test
+../../.venv-flappy-bird/bin/python -m flappy_bird.main --play-best
+../../.venv-flappy-bird/bin/python -m flappy_bird.main --human
+
+../../.venv-flappy-bird/bin/python -m dino_runner.main --generations 100
+../../.venv-flappy-bird/bin/python -m dino_runner.main --generations 2 --headless --seed 42
+../../.venv-flappy-bird/bin/python -m dino_runner.main --test
+../../.venv-flappy-bird/bin/python -m dino_runner.main --play-best
+../../.venv-flappy-bird/bin/python -m dino_runner.main --play  # play beside the frozen best AI
 ```
 
-Train visually for a chosen number of generations:
+Use `--population`, `--time-limit`, `--checkpoint-interval`, and `--resume`
+to tune or continue a training run. `--checkpoint-interval 0` disables
+checkpoint output. Headless runs do not open a display and are suitable for CI.
+
+Dino Runner's five inputs are fixed and documented in `dino_runner/main.py`:
+state (`-1` ducking, `0` running, `+1` jumping), normalized next-obstacle
+distance, obstacle type (`-1` cactus, `+1` bird), normalized current speed,
+and normalized second-obstacle distance. Its two outputs are `[jump, duck]`;
+when both exceed the action threshold, jump wins. Cactus obstacles require
+jumping and low floating birds require ducking. Fitness is `+0.05` per frame,
+`+5` per obstacle passed, and `-5` on death. `--play` uses the exact same
+seeded obstacle stream for the human and frozen AI; orange is the human,
+blue is the AI, and the result banner reports both scores.
+
+## Validation
 
 ```bash
-../../.venv-flappy-bird/bin/python main.py --generations 100
-```
-
-Fast, reproducible headless training:
-
-```bash
-../../.venv-flappy-bird/bin/python main.py --generations 100 --headless --seed 42
-```
-
-Experiment with population size and generation length:
-
-```bash
-../../.venv-flappy-bird/bin/python main.py --generations 100 --headless --population 100 --time-limit 900
-```
-
-Checkpoints are saved every 10 generations by default. Resume from one with:
-
-```bash
-../../.venv-flappy-bird/bin/python main.py --resume neat-checkpoint-10 --generations 100 --headless
-```
-
-Disable checkpoint files with `--checkpoint-interval 0`.
-
-Validate the files and installed dependencies:
-
-```bash
-../../.venv-flappy-bird/bin/python main.py --test
-```
-
-The best genome is saved as `best_bird.pkl` after the score exceeds 50.
-
-Replay the saved genome:
-
-```bash
-../../.venv-flappy-bird/bin/python main.py --play-best
-```
-
-Play manually with `Space` to flap, `P` to pause, and `R` to restart:
-
-```bash
-../../.venv-flappy-bird/bin/python main.py --human
-```
-
-Human mode does not train the AI or make training faster. It is a gameplay and
-comparison mode. While playing, it shows the saved AI's best pipe score and the
-generation in which that saved record was reached. At the end, the terminal
-prints your best score for the session and the AI record.
-
-The saved genome includes its fitness, generation, pipe score, seed, and save timestamp. Use `pytest` to run the pure-logic tests:
-
-```bash
+../../.venv-flappy-bird/bin/python -m compileall -q common flappy_bird dino_runner tests
 ../../.venv-flappy-bird/bin/python -m pytest -q
 ```
 
-The current generation evaluates all genomes against one shared pipe timeline, so `neat.ParallelEvaluator` is intentionally not used. Headless mode removes the rendering cost while preserving that shared-environment comparison. Multiprocessing can be added after moving each genome to an independent environment, but doing so now would change the fitness comparison semantics.
-
-## GPU usage
-
-NEAT evaluates the neural networks on the CPU. Pygame's 2D drawing is also primarily CPU-side, so this project does not require CUDA or a dedicated GPU. A GPU may still be used by the desktop compositor for presenting the window, but it does not accelerate training.
+Generated genomes, NEAT checkpoints, Python caches, and virtual environments
+are ignored by Git.

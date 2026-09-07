@@ -1,10 +1,10 @@
 """Neuroevolutionary Flappy Bird using pygame and neat-python.
 
-Run normally for the visual simulation:
-    python main.py
+Run normally for the visual simulation from the repository root:
+    python -m flappy_bird.main
 
-Run a dependency-free syntax check:
-    python main.py --test
+Run a project validation check:
+    python -m flappy_bird.main --test
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import copy
 import os
 import pickle
 import random
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -21,6 +22,18 @@ from typing import Any
 
 import neat
 import pygame
+
+try:
+    from common.hud import draw_training_hud
+    from common.human_input import HumanInput
+    from common.stop_button import StopButton
+    from common.training_state import TrainingState
+except ModuleNotFoundError:  # Support ``python flappy_bird/main.py`` from the repo root.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from common.hud import draw_training_hud
+    from common.human_input import HumanInput
+    from common.stop_button import StopButton
+    from common.training_state import TrainingState
 
 
 WIDTH = 500
@@ -99,10 +112,16 @@ class Bird:
         self.y += self.velocity
         self._sync_rect()
 
-    def draw(self, surface: pygame.Surface) -> None:
-        pygame.draw.circle(surface, BIRD, self.rect.center, BIRD_RADIUS)
+    def draw(
+        self,
+        surface: pygame.Surface,
+        *,
+        body_color: tuple[int, int, int] = BIRD,
+        wing_color: tuple[int, int, int] = BIRD_WING,
+    ) -> None:
+        pygame.draw.circle(surface, body_color, self.rect.center, BIRD_RADIUS)
         wing = pygame.Rect(self.rect.left + 2, self.rect.centery + 2, 15, 8)
-        pygame.draw.ellipse(surface, BIRD_WING, wing)
+        pygame.draw.ellipse(surface, wing_color, wing)
         pygame.draw.circle(surface, WHITE, (self.rect.right - 5, self.rect.top + 7), 5)
         pygame.draw.circle(surface, INK, (self.rect.right - 4, self.rect.top + 7), 2)
         pygame.draw.polygon(
@@ -191,58 +210,20 @@ def draw_hud(
     score: int,
     stop_hovered: bool,
 ) -> pygame.Rect:
-    title_font, body_font, small_font = fonts
-    panel = pygame.Surface((WIDTH - 24, 124), pygame.SRCALPHA)
-    panel.fill((*PANEL, 238))
-    pygame.draw.rect(panel, PANEL_EDGE, panel.get_rect(), 2, border_radius=16)
-    surface.blit(panel, (12, 12))
-
-    surface.blit(title_font.render("NEAT FLAPPY BIRD", True, ACCENT), (28, 24))
-    surface.blit(
-        small_font.render("LIVE EVOLUTION LAB", True, (96, 121, 111)),
-        (30, 54),
-    )
-
-    metrics = (
-        ("GENERATION", str(CURRENT_GENERATION), 28),
-        ("BIRDS ALIVE", f"{alive_count}/{population_size}", 132),
-        ("SCORE", str(score), 252),
-    )
-    for label, value, x in metrics:
-        surface.blit(small_font.render(label, True, (96, 121, 111)), (x, 78))
-        surface.blit(body_font.render(value, True, INK), (x, 94))
-
-    stop_button = pygame.Rect(WIDTH - 136, 28, 112, 38)
-    pygame.draw.rect(
+    TRAINING_STATE.generation = CURRENT_GENERATION
+    TRAINING_STATE.score = score
+    button = StopButton(pygame.Rect(WIDTH - 136, 28, 112, 38))
+    draw_training_hud(
         surface,
-        STOP_HOVER if stop_hovered else STOP,
-        stop_button,
-        border_radius=10,
+        fonts,
+        TRAINING_STATE,
+        alive_count,
+        population_size,
+        "NEAT FLAPPY BIRD",
+        "LIVE EVOLUTION LAB",
+        button,
     )
-    stop_label = body_font.render("STOP", True, WHITE)
-    surface.blit(stop_label, stop_label.get_rect(center=stop_button.center))
-
-    summary = pygame.Surface((WIDTH - 24, 74), pygame.SRCALPHA)
-    summary.fill((*PANEL, 220))
-    pygame.draw.rect(summary, PANEL_EDGE, summary.get_rect(), 2, border_radius=14)
-    surface.blit(summary, (12, 146))
-    if LAST_GENERATION_BEST is None:
-        last_best = "--"
-        last_average = "--"
-        improvement = "--"
-    else:
-        last_best = f"{LAST_GENERATION_BEST:.1f}"
-        last_average = f"{LAST_GENERATION_AVERAGE:.1f}"
-        improvement = f"{LAST_GENERATION_IMPROVEMENT:+.1f}%"
-    summary_values = (
-        ("LAST GEN BEST", last_best, 28),
-        ("LAST GEN AVG", last_average, 170),
-        ("IMPROVEMENT", improvement, 312),
-    )
-    for label, value, x in summary_values:
-        surface.blit(small_font.render(label, True, (96, 121, 111)), (x, 158))
-        surface.blit(body_font.render(value, True, ACCENT), (x, 174))
-    return stop_button
+    return button.rect
 
 
 def draw_simple_status(surface: pygame.Surface, font: pygame.font.Font, text: str) -> None:
@@ -285,7 +266,7 @@ def evaluate_genomes(
     frame = 0
     score = 0
     running = True
-    stop_button = pygame.Rect(WIDTH - 136, 28, 112, 38)
+    stop_button = StopButton(pygame.Rect(WIDTH - 136, 28, 112, 38))
 
     while running and not STOP_REQUESTED and birds and frame < GENERATION_TIME_LIMIT:
         if clock is not None:
@@ -296,13 +277,16 @@ def evaluate_genomes(
                 if event.type == pygame.QUIT:
                     running = False
                     STOP_REQUESTED = True
+                    TRAINING_STATE.request_stop()
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     running = False
                     STOP_REQUESTED = True
+                    TRAINING_STATE.request_stop()
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    if stop_button.collidepoint(event.pos):
+                    if stop_button.clicked(event):
                         running = False
                         STOP_REQUESTED = True
+                        TRAINING_STATE.request_stop()
 
         if not running:
             break
@@ -346,13 +330,13 @@ def evaluate_genomes(
                     bird.draw(screen)
 
             alive_count = sum(bird.alive for bird in birds)
-            stop_button = draw_hud(
+            draw_hud(
                 screen,
                 fonts,
                 alive_count,
                 len(birds),
                 score,
-                stop_button.collidepoint(pygame.mouse.get_pos()),
+                stop_button.rect.collidepoint(pygame.mouse.get_pos()),
             )
             pygame.display.flip()
 
@@ -365,6 +349,9 @@ def evaluate_genomes(
     LAST_GENERATION_IMPROVEMENT = percentage_improvement(generation_best, LAST_GENERATION_BEST)
     LAST_GENERATION_BEST = generation_best
     LAST_GENERATION_AVERAGE = generation_average
+    TRAINING_STATE.generation = CURRENT_GENERATION
+    TRAINING_STATE.score = score
+    TRAINING_STATE.record_generation(generation_best, generation_average)
     if render:
         pygame.quit()
     if STOP_REQUESTED:
@@ -464,6 +451,130 @@ def play_best(config_path: Path) -> None:
     pygame.quit()
 
 
+def play_against_ai(config_path: Path) -> None:
+    """Play as a human beside the frozen best genome on shared pipes."""
+    genome, metadata = load_best_genome()
+    config = neat.Config(
+        neat.DefaultGenome,
+        neat.DefaultReproduction,
+        neat.DefaultSpeciesSet,
+        neat.DefaultStagnation,
+        str(config_path),
+    )
+    network = neat.nn.FeedForwardNetwork.create(genome, config)
+    seed = metadata.get("seed")
+    if seed is None:
+        # Older genome files may not contain a seed; keep replay deterministic.
+        seed = 0
+    rng = random.Random(seed)
+
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("NEAT Flappy Bird - You vs Frozen AI")
+    clock = pygame.time.Clock()
+    font = pygame.font.Font(None, 24)
+    result_font = pygame.font.Font(None, 32)
+    input_state = HumanInput()
+    human_color = (238, 116, 42)
+    ai_color = (55, 100, 190)
+    human = Bird()
+    ai = Bird()
+    pipes = [Pipe(WIDTH + 80, rng)]
+    human_score = 0
+    ai_score = 0
+    running = True
+
+    while running:
+        clock.tick(FPS)
+        events = pygame.event.get()
+        input_state.handle(events)
+        if input_state.quit_requested:
+            running = False
+        if input_state.restart_requested:
+            rng = random.Random(seed)
+            human = Bird()
+            ai = Bird()
+            pipes = [Pipe(WIDTH + 80, rng)]
+            human_score = 0
+            ai_score = 0
+            input_state.paused = False
+        if not running:
+            break
+
+        if not input_state.paused and (human.alive or ai.alive):
+            if pipes[-1].x < WIDTH - 230:
+                pipes.append(Pipe(WIDTH + 30, rng))
+
+            if human.alive and input_state.flap_requested:
+                human.jump()
+            if human.alive:
+                human.move()
+
+            if ai.alive:
+                current_pipe = next_pipe(pipes, ai)
+                if network.activate(network_inputs(ai, current_pipe))[0] > ACTION_THRESHOLD:
+                    ai.jump()
+                ai.move()
+
+            for bird in (human, ai):
+                if bird.alive and (
+                    bird.rect.top <= 0
+                    or bird.rect.bottom >= GROUND_Y
+                    or any(pipe.collides(bird) for pipe in pipes)
+                ):
+                    bird.alive = False
+
+            for pipe in pipes:
+                pipe.move()
+                if not pipe.passed and pipe.x + PIPE_WIDTH < BIRD_X:
+                    pipe.passed = True
+                    human_score += int(human.alive)
+                    ai_score += int(ai.alive)
+            pipes = remove_dead(pipes)
+
+        draw_background(screen)
+        for pipe in pipes:
+            pipe.draw(screen)
+        if human.alive:
+            human.draw(screen, body_color=human_color, wing_color=(205, 77, 25))
+        if ai.alive:
+            ai.draw(screen, body_color=ai_color, wing_color=(35, 62, 135))
+
+        screen.blit(font.render(f"YOU (orange): {human_score}", True, human_color), (16, 24))
+        screen.blit(font.render(f"AI (blue): {ai_score}", True, ai_color), (16, 50))
+        screen.blit(
+            font.render("SPACE flap | P pause | R restart | Esc quit", True, INK),
+            (16, HEIGHT - 34),
+        )
+
+        if not human.alive and not ai.alive:
+            if human_score > ai_score:
+                result = "YOU WIN"
+            elif ai_score > human_score:
+                result = "AI WINS"
+            else:
+                result = "DRAW"
+            banner = result_font.render(
+                f"{result}   YOU {human_score} - AI {ai_score}   (R restart)",
+                True,
+                INK,
+            )
+            banner_rect = banner.get_rect(center=(WIDTH // 2, HEIGHT // 2))
+            pygame.draw.rect(screen, PANEL, banner_rect.inflate(24, 20), border_radius=10)
+            pygame.draw.rect(
+                screen,
+                PANEL_EDGE,
+                banner_rect.inflate(24, 20),
+                2,
+                border_radius=10,
+            )
+            screen.blit(banner, banner_rect)
+        pygame.display.flip()
+
+    print(f"Play result: you={human_score}, ai={ai_score}.")
+    pygame.quit()
+
+
 def play_human() -> None:
     """Run a keyboard-controlled game for physics and collision comparison."""
     pygame.init()
@@ -475,6 +586,7 @@ def play_human() -> None:
     comparison_font = pygame.font.Font(None, 20)
     restart_button = pygame.Rect(WIDTH - 238, 18, 106, 36)
     exit_button = pygame.Rect(WIDTH - 122, 18, 106, 36)
+    human_input = HumanInput()
     try:
         _, best_metadata = load_best_genome()
     except (OSError, pickle.PickleError, EOFError, AttributeError, KeyError):
@@ -490,29 +602,31 @@ def play_human() -> None:
 
     while running:
         clock.tick(FPS)
-        for event in pygame.event.get():
+        events = pygame.event.get()
+        human_input.handle(events)
+        for event in events:
             if event.type == pygame.QUIT:
                 running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-                elif event.key == pygame.K_SPACE and bird.alive and not paused:
-                    bird.jump()
-                elif event.key == pygame.K_p:
-                    paused = not paused
-                elif event.key == pygame.K_r:
-                    bird = Bird()
-                    pipes = [Pipe(WIDTH + 80)]
-                    score = 0
-                    paused = False
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if restart_button.collidepoint(event.pos):
                     bird = Bird()
                     pipes = [Pipe(WIDTH + 80)]
                     score = 0
                     paused = False
+                    human_input.paused = False
                 elif exit_button.collidepoint(event.pos):
                     running = False
+        if human_input.quit_requested:
+            running = False
+        paused = human_input.paused
+        if human_input.restart_requested:
+            bird = Bird()
+            pipes = [Pipe(WIDTH + 80)]
+            score = 0
+            paused = False
+            human_input.paused = False
+        if human_input.flap_requested and bird.alive and not paused:
+            bird.jump()
         if not running:
             break
         if not paused and bird.alive:
@@ -593,6 +707,7 @@ LAST_GENERATION_AVERAGE = 0.0
 LAST_GENERATION_IMPROVEMENT = 0.0
 RECENT_IMPROVEMENTS: deque[float] = deque(maxlen=5)
 STOP_REQUESTED = False
+TRAINING_STATE = TrainingState()
 
 
 def run_training(
@@ -606,6 +721,7 @@ def run_training(
     global CURRENT_GENERATION, STOP_REQUESTED, BEST_GENOME_FITNESS
     global ALL_TIME_BEST_FITNESS, ALL_TIME_BEST_SCORE
     STOP_REQUESTED = False
+    TRAINING_STATE.stop_requested = False
     if seed is not None:
         random.seed(seed)
     rng = random.Random(seed)
@@ -673,6 +789,7 @@ def main() -> None:
     parser.add_argument("--generations", type=int, default=100, help="Number of generations to train")
     parser.add_argument("--headless", action="store_true", help="Train without opening a Pygame window")
     parser.add_argument("--play-best", action="store_true", help="Replay the saved best genome")
+    parser.add_argument("--play", action="store_true", help="Play beside the frozen best AI on shared pipes")
     parser.add_argument("--human", action="store_true", help="Play manually with Space, P, and R")
     parser.add_argument("--seed", type=int, help="Seed random generation for reproducible runs")
     parser.add_argument("--population", type=int, default=50, help="Population size for new runs")
@@ -698,6 +815,13 @@ def main() -> None:
         if not BEST_GENOME_PATH.exists():
             raise FileNotFoundError(f"No saved genome found at {BEST_GENOME_PATH}")
         play_best(CONFIG_PATH)
+        return
+    if args.play:
+        if not BEST_GENOME_PATH.exists():
+            raise FileNotFoundError(
+                f"No saved genome found at {BEST_GENOME_PATH}; train the AI first"
+            )
+        play_against_ai(CONFIG_PATH)
         return
     if args.human:
         play_human()

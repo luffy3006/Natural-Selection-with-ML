@@ -2,7 +2,7 @@ import random
 
 import pygame
 
-import main
+from flappy_bird import main
 
 
 def setup_module() -> None:

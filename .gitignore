@@ -1,6 +1,10 @@
 __pycache__/
-*.pyc
-best_bird.pkl
-neat-checkpoint-*
+*.py[cod]
+.pytest_cache/
 .venv/
+venv/
+*.egg-info/
 .env
+
+**/best_*.pkl
+**/neat-checkpoint-*

@@ -8,10 +8,12 @@ This is a Python Flappy Bird simulation that uses Pygame for the game loop and d
 
 ## Files
 
-- `main.py`: gameplay, physics, collision detection, rendering, HUD, NEAT evaluation callback, training loop, and genome saving.
-- `config-feedforward.txt`: NEAT population, genome, mutation, species, and reproduction settings.
-- `README.md`: installation and run instructions.
-- `.gitignore`: ignores Python caches, virtual environments, `.env`, and `best_bird.pkl`.
+- `flappy_bird/main.py`: gameplay, physics, collision detection, rendering, NEAT evaluation callback, training loop, and genome saving.
+- `flappy_bird/config-feedforward.txt`: NEAT population, genome, mutation, species, and reproduction settings.
+- `common/ui.py`: shared HUD, training metrics, stop button, and keyboard input helpers.
+- `dino_runner/`: a second NEAT game using the same shared helpers.
+- `README.md`: repository-wide installation and run instructions.
+- `.gitignore`: ignores Python caches, virtual environments, `.env`, genomes, and checkpoints.
 - `best_bird.pkl`: generated whenever a generation produces a new best fitness; it is ignored by Git.
 
 ## Runtime setup
@@ -19,17 +21,17 @@ This is a Python Flappy Bird simulation that uses Pygame for the game loop and d
 - Python: tested with Python 3.14.
 - Pygame implementation: `pygame-ce 2.5.8`, imported in code as `pygame`.
 - AI library: `neat-python 2.0.0`.
-- The virtual environment is outside the project folder at `../../.venv-flappy-bird` because the project directory name contains a colon, which prevents creating a venv inside it.
+- The repository virtual environment is `.venv` at the repository root.
 - Normal run:
 
 ```bash
-../../.venv-flappy-bird/bin/python main.py --generations 100
+./.venv/bin/python -m flappy_bird.main --generations 100
 ```
 
 - Validation mode currently prints a validation message and does not open a window:
 
 ```bash
-../../.venv-flappy-bird/bin/python main.py --test
+./.venv/bin/python -m flappy_bird.main --test
 ```
 
 ## Global game constants
