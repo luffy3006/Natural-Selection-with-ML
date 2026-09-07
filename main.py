@@ -34,6 +34,7 @@ PIPE_GAP = 175
 PIPE_SPEED = 5
 MAX_FALL_SPEED = 12
 GENERATION_TIME_LIMIT = 30 * FPS
+POPULATION_SIZE = 50
 BEST_GENOME_PATH = Path(__file__).with_name("best_bird.pkl")
 CONFIG_PATH = Path(__file__).with_name("config-feedforward.txt")
 CHECKPOINT_PREFIX = str(Path(__file__).with_name("neat-checkpoint-"))
@@ -241,6 +242,11 @@ def draw_hud(
         surface.blit(small_font.render(label, True, (96, 121, 111)), (x, 158))
         surface.blit(body_font.render(value, True, ACCENT), (x, 174))
     return stop_button
+
+
+def draw_simple_status(surface: pygame.Surface, font: pygame.font.Font, text: str) -> None:
+    label = font.render(text, True, INK)
+    surface.blit(label, (16, HEIGHT - 42))
 
 
 def evaluate_genomes(
@@ -457,9 +463,71 @@ def play_best(config_path: Path) -> None:
     pygame.quit()
 
 
+def play_human() -> None:
+    """Run a keyboard-controlled game for physics and collision comparison."""
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("NEAT Flappy Bird - Human Mode")
+    clock = pygame.time.Clock()
+    font = pygame.font.Font(None, 24)
+    bird = Bird()
+    pipes = [Pipe(WIDTH + 80)]
+    score = 0
+    paused = False
+    running = True
+
+    while running:
+        clock.tick(FPS)
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+                elif event.key == pygame.K_SPACE and bird.alive and not paused:
+                    bird.jump()
+                elif event.key == pygame.K_p:
+                    paused = not paused
+                elif event.key == pygame.K_r:
+                    bird = Bird()
+                    pipes = [Pipe(WIDTH + 80)]
+                    score = 0
+                    paused = False
+        if not running:
+            break
+        if not paused and bird.alive:
+            if pipes[-1].x < WIDTH - 230:
+                pipes.append(Pipe(WIDTH + 30))
+            bird.move()
+            if bird.rect.top <= 0 or bird.rect.bottom >= GROUND_Y:
+                bird.alive = False
+            for pipe in pipes:
+                if pipe.collides(bird):
+                    bird.alive = False
+                pipe.move()
+                if not pipe.passed and pipe.x + PIPE_WIDTH < BIRD_X:
+                    pipe.passed = True
+                    score += 1
+            pipes = remove_dead(pipes)
+
+        draw_background(screen)
+        for pipe in pipes:
+            pipe.draw(screen)
+        if bird.alive:
+            bird.draw(screen)
+        status = "PAUSED - P resume | R restart" if paused else "SPACE jump | P pause | R restart"
+        if not bird.alive:
+            status = f"Game over: {score} pipes | R restart | Esc quit"
+        draw_simple_status(screen, font, status)
+        pygame.display.flip()
+    pygame.quit()
+
+
 CURRENT_GENERATION = 0
 BEST_SCORE = 0
 BEST_GENOME_FITNESS: float | None = None
+ALL_TIME_BEST_FITNESS: float | None = None
+ALL_TIME_BEST_SCORE = 0
 LAST_GENERATION_BEST: float | None = None
 LAST_GENERATION_AVERAGE = 0.0
 LAST_GENERATION_IMPROVEMENT = 0.0
@@ -475,6 +543,7 @@ def run_training(
     checkpoint_interval: int = 10,
 ) -> None:
     global CURRENT_GENERATION, STOP_REQUESTED, BEST_GENOME_FITNESS
+    global ALL_TIME_BEST_FITNESS, ALL_TIME_BEST_SCORE
     STOP_REQUESTED = False
     if seed is not None:
         random.seed(seed)
@@ -483,6 +552,8 @@ def run_training(
         try:
             _, metadata = load_best_genome()
             BEST_GENOME_FITNESS = metadata.get("fitness")
+            ALL_TIME_BEST_FITNESS = BEST_GENOME_FITNESS
+            ALL_TIME_BEST_SCORE = metadata.get("pipe_score") or 0
         except (OSError, pickle.PickleError, EOFError, AttributeError, KeyError):
             BEST_GENOME_FITNESS = None
     config = neat.Config(
@@ -492,6 +563,7 @@ def run_training(
         neat.DefaultStagnation,
         str(config_path),
     )
+    config.pop_size = POPULATION_SIZE
     if resume is not None:
         population = neat.Checkpointer.restore_checkpoint(str(resume))
         CURRENT_GENERATION = population.generation
@@ -508,7 +580,7 @@ def run_training(
         )
 
     def run_generation(genomes: list[tuple[int, neat.DefaultGenome]], neat_config: neat.Config) -> None:
-        global CURRENT_GENERATION
+        global CURRENT_GENERATION, ALL_TIME_BEST_FITNESS, ALL_TIME_BEST_SCORE
         CURRENT_GENERATION += 1
         evaluate_genomes(genomes, neat_config, render=render, rng=rng)
         generation_winner = max(genomes, key=lambda item: item[1].fitness)[1]
@@ -520,6 +592,11 @@ def run_training(
                 generation_winner.fitness,
                 seed,
             )
+        ALL_TIME_BEST_FITNESS = max(
+            ALL_TIME_BEST_FITNESS or generation_winner.fitness,
+            generation_winner.fitness,
+        )
+        ALL_TIME_BEST_SCORE = max(ALL_TIME_BEST_SCORE, BEST_SCORE)
 
     try:
         winner = population.run(run_generation, generations)
@@ -530,11 +607,15 @@ def run_training(
 
 
 def main() -> None:
+    global POPULATION_SIZE, GENERATION_TIME_LIMIT
     parser = argparse.ArgumentParser(description="Train NEAT agents to play Flappy Bird.")
     parser.add_argument("--generations", type=int, default=100, help="Number of generations to train")
     parser.add_argument("--headless", action="store_true", help="Train without opening a Pygame window")
     parser.add_argument("--play-best", action="store_true", help="Replay the saved best genome")
+    parser.add_argument("--human", action="store_true", help="Play manually with Space, P, and R")
     parser.add_argument("--seed", type=int, help="Seed random generation for reproducible runs")
+    parser.add_argument("--population", type=int, default=50, help="Population size for new runs")
+    parser.add_argument("--time-limit", type=int, default=GENERATION_TIME_LIMIT, help="Maximum frames per generation")
     parser.add_argument("--resume", type=Path, help="Resume from a neat-checkpoint file")
     parser.add_argument(
         "--checkpoint-interval",
@@ -557,6 +638,13 @@ def main() -> None:
             raise FileNotFoundError(f"No saved genome found at {BEST_GENOME_PATH}")
         play_best(CONFIG_PATH)
         return
+    if args.human:
+        play_human()
+        return
+    if args.population < 2:
+        raise ValueError("--population must be at least 2")
+    POPULATION_SIZE = args.population
+    GENERATION_TIME_LIMIT = max(1, args.time_limit)
     run_training(
         CONFIG_PATH,
         max(1, args.generations),

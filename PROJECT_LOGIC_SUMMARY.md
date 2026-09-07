@@ -266,6 +266,9 @@ Stopping raises `TrainingStopped` after the current evaluation cleans up Pygame.
 - Fitness weights are named constants: survival `0.05`, pipe pass `8.0`, death `-5.0`.
 - Best-genome files contain the genome plus generation, fitness, pipe score, seed, and timestamp.
 - `--play-best` replays the saved genome in a single-bird visual window.
+- `--human` runs keyboard-controlled gameplay; `Space` flaps, `P` pauses, and `R` restarts.
+- `--population N` overrides the population size for a new run.
+- `--time-limit N` overrides the generation frame limit.
 - `test_main.py` covers deterministic pipes, input bounds, gravity, collision, and improvement math.
 
 ## Current limitations and possible improvement areas
@@ -289,9 +292,9 @@ These are areas to ask Claude to review rather than claims that they are already
 15. The current summary compares best fitness values, not pipe scores. Decide which metric is more meaningful for users.
 16. The project does not use GPU acceleration. For this small problem, CPU is appropriate, but multiprocessing could be tested before adding GPU complexity.
 17. Checkpoint/resume support is implemented; a future improvement could checkpoint UI state and benchmark metadata too.
-18. The CLI now supports generations, headless mode, seed, checkpoint interval, resume, play-best, and test; population size and physics overrides remain config-level changes.
+18. The CLI supports generations, headless mode, seed, checkpoint interval, resume, play-best, human mode, population size, time limit, and test.
 19. The code uses global state for HUD/training metrics. A training-state object would make the code easier to test and extend.
-20. The game has no human-play mode, pause control, restart control, or separate trained-agent demonstration mode.
+20. The game now has human-play, pause, restart, and trained-agent demonstration modes; a future UI improvement could add a dedicated menu between them.
 
 ## Questions for Claude
 
@@ -309,3 +312,4 @@ Please review this project as a senior Python/game-AI engineer and answer:
 10. How should the UI distinguish current run score, generation best score, historical best score, fitness, and improvement percentage?
 11. Please propose a prioritized roadmap with low-risk fixes first and larger architectural changes later.
 12. Include concrete code-level examples where useful, but preserve the current two-file requirement if possible.
+Documentation and tests are added, including deterministic pipe generation, bounded inputs, gravity clamping, collision, and improvement math. I’m installing the test runner in the existing environment and running the focused suite before updating the long project summary and committing.

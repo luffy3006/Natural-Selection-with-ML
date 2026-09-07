@@ -32,6 +32,12 @@ Fast, reproducible headless training:
 ../../.venv-flappy-bird/bin/python main.py --generations 100 --headless --seed 42
 ```
 
+Experiment with population size and generation length:
+
+```bash
+../../.venv-flappy-bird/bin/python main.py --generations 100 --headless --population 100 --time-limit 900
+```
+
 Checkpoints are saved every 10 generations by default. Resume from one with:
 
 ```bash
@@ -46,7 +52,7 @@ Validate the files and installed dependencies:
 ../../.venv-flappy-bird/bin/python main.py --test
 ```
 
-The best genome is saved as `best_bird.pkl` whenever a generation produces a new best fitness.
+The best genome is saved as `best_bird.pkl` after the score exceeds 50.
 
 Replay the saved genome:
 
@@ -54,11 +60,19 @@ Replay the saved genome:
 ../../.venv-flappy-bird/bin/python main.py --play-best
 ```
 
+Play manually with `Space` to flap, `P` to pause, and `R` to restart:
+
+```bash
+../../.venv-flappy-bird/bin/python main.py --human
+```
+
 The saved genome includes its fitness, generation, pipe score, seed, and save timestamp. Use `pytest` to run the pure-logic tests:
 
 ```bash
 ../../.venv-flappy-bird/bin/python -m pytest -q
 ```
+
+The current generation evaluates all genomes against one shared pipe timeline, so `neat.ParallelEvaluator` is intentionally not used. Headless mode removes the rendering cost while preserving that shared-environment comparison. Multiprocessing can be added after moving each genome to an independent environment, but doing so now would change the fitness comparison semantics.
 
 ## GPU usage
 
